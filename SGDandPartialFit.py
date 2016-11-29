@@ -8,12 +8,13 @@ from sklearn.linear_model import SGDClassifier
 import nltk
 from nltk.corpus import stopwords # Import the stop word list
 import re
+import requests
 from bs4 import BeautifulSoup # Use bs4 to remove html tags or markup
 from sklearn.feature_extraction.text import HashingVectorizer
 from sklearn.metrics import accuracy_score
 import pickle
 
-print('All libarris are imported successfully!')
+print('All libraries are imported successfully!')
 
 # Import data
 print('\nData Importing.............')
@@ -85,15 +86,14 @@ for i in range( 0, num_tweets ):
         print("Tweet %d of %d\n" % ( i+1, num_tweets ))                                                                   
     clean_train_tweets.append( tweet_to_words( train["Tweet"][i] ))
     
-print('\nCleaning of all tweets have been done in ', time.time()-startTime, 'seconds.')
-
+print('\nCleaning of all tweets have been done in ', (time.time()-startTime)/60, 'Minutes.')
 # Object Serialization
 ##pickle_in = open('clean_train_tweets.pickle','wb')
 ##pickle.dump(clean_train_tweets, pickle_in)
 ##pickle_in.close()
 ##pickle_in = open('clean_train_tweets.pickle','rb')
 ##clean_train_tweets = pickle.load(pickle_in)
-print('\nYou can use pickling to get cleaned trained tweets (clean_train_tweets.pickle).')
+print('\nYou can use pickling to get cleaned trained tweets (clean_train_tweets.pickle, SGDClassifier.pickle).')
 
 # Initialize the "HashingVectorizer" object, which is scikit-learn's
 # bag of words tool with max_features  
@@ -105,6 +105,17 @@ vectorizer = HashingVectorizer(analyzer = "word", \
                              n_features = 2**18)
 
 train_data_features = vectorizer.fit_transform(clean_train_tweets)
+
+topwords_vector = CountVectorizer(analyzer = "word",   \
+                             tokenizer = None,    \
+                             preprocessor = None, \
+                             stop_words = None,   \
+                             max_features = 50)
+
+print("Below are the top 50 words used in classification: \n")
+train_data_features1 = topwords_vector.fit_transform(clean_train_tweets)
+vocab = topwords_vector.get_feature_names()
+print(vocab)
 
 print('\nWe have created  document term matrix with dimensions ', train_data_features.shape, ' and we have target variable with dimensions ', train['Tweet'].shape)
 
@@ -133,6 +144,8 @@ print("\nDividing data into small chunks with size 100K...")
 batcherator = iter_minibatches(chunksize=100000)
 
 clf = SGDClassifier(loss='modified_huber', random_state=1, n_iter=1, n_jobs = -1)
+
+#clf = SGDClassifier(loss='modified_huber', penalty='l1', alpha=0.001, l1_ratio=1, fit_intercept=True, n_iter=1, shuffle=True, verbose=0,  n_jobs= -1, random_state=1, learning_rate='optimal', eta0=0.0, power_t=0.5, class_weight=None, warm_start=True, average=True)
 
 classes = np.unique(train['Subtopic'])
 BatchNumber = 1
@@ -174,10 +187,100 @@ print('\nWe have received accuracy of ', accuracy_score(test['Subtopic'], output
 
 a = (output.groupby('Subtopic').size() / output.groupby('Subtopic').size().sum())*100
 a = pd.DataFrame({'Subtopic':a.index, 'Percentage':a.values})
-a.sort(['Percentage'], ascending=[False,True])
+a = a.sort(['Percentage'], ascending=False)
 a = a[["Subtopic", "Percentage"]]
+a = a.reset_index(drop=True)
 
 print('\nTopic distribution in percentages as follows:\n')
 print(a.head(10))
 
 print('Prediction of maximum likelihood topics is completed now!')
+
+print('\nChecking sentiments of tweets related to 1st stopic...')
+
+#####################################################################
+
+s = []
+c = []
+
+tweet = output['Tweet']
+
+for i in tweet:
+    time.sleep(0.300)
+    response = requests.post("https://text-sentiment.p.mashape.com/analyze",
+                             headers={
+                                 "X-Mashape-Key": "W0cPU4Age0mshP3aCRzwx3ORgPh4p1t4jmdjsnEtljSMYauL6n",
+                                 "Content-Type": "application/x-www-form-urlencoded",
+                                 "Accept": "application/json"
+                                 },
+                             params={
+                                 "text": i
+                                 }
+                             )
+    result = response.text
+    result = result.replace('"', '')
+    result = result.replace(',', ' ')
+
+    posSent = re.search('pos:(.+?)neg', result)
+    posSent = posSent.group(1)
+
+    negSent = re.search('neg:(.+?)mid', result)
+    negSent = negSent.group(1)
+
+    neutralSent = re.search('mid:(.+?)pos_percent', result)
+    neutralSent = neutralSent.group(1)
+
+    posConf = re.search('pos_percent:(.+?)%', result)
+    posConf = posConf.group(1)
+
+    negConf = re.search('neg_percent:(.+?)%', result)
+    negConf = negConf.group(1)
+
+    neutralConf = re.search('mid_percent:(.+?)%', result)
+    neutralConf = neutralConf.group(1)
+
+    sentiment = [posSent, negSent, neutralSent]
+    confidence = [posConf, negConf, neutralConf]
+
+    if(int(sentiment[0])!= 0):
+        s.append('Positive')
+        c.append(confidence[0])
+    elif(int(sentiment[1]) != 0):
+        s.append('Negative')
+        c.append(confidence[1])
+    elif(int(sentiment[2])!= 0):
+        s.append('Neutral')
+        c.append(confidence[2])
+    
+
+df = pd.DataFrame( data={"Subtopic": output["Subtopic"], "Tweet": output["Tweet"], "Sentiment": s, "Confidence": c})
+
+seriesA = (df.groupby('Subtopic').size() / df.groupby('Subtopic').size().sum())*100
+seriesA = pd.DataFrame({'Subtopic':seriesA.index, 'Percentage':seriesA.values})
+
+topics = np.unique(df[['Subtopic']])
+
+abc = []
+posList = []
+negList = []
+neutral = []
+
+for j in topics:
+    abc = df.loc[df['Subtopic'] == j]
+    totalC = len(abc)
+    posC = (len(abc.loc[abc['Sentiment'] == 'Positive'])/len(abc))*100
+    negC = (len(abc.loc[abc['Sentiment'] == 'Negative'])/len(abc))*100
+    neutralC = (len(abc.loc[abc['Sentiment'] == 'Neutral'])/len(abc))*100
+
+    posList.append(posC)
+    negList.append(negC)
+    neutral.append(neutralC)
+        
+df_final = pd.DataFrame( data={"Subtopic": seriesA["Subtopic"], "Percentage": seriesA["Percentage"], "Positive_Sent": posList, "Negative_Sent": negList,"Neutral_Sent": neutral})
+df_final = df_final[['Subtopic', 'Percentage', 'Positive_Sent', 'Negative_Sent', 'Neutral_Sent']] 
+df_final = df_final.sort(['Percentage'], ascending=False)
+df_final = df_final.reset_index(drop=True)
+
+print(df_final.head(10))
+
+df_final.to_csv("final_result.csv", sep=',', encoding='utf-8', index=False)
